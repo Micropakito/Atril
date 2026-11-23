@@ -229,6 +229,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, label:focus-within {
 .drawer li button.on { border-left-color: var(--accent); color: var(--accent); font-weight: 600; background: var(--accent-soft); }
 
 /* ---------- settings popover ---------- */
+/* ---------- page mode: the chapter is laid out in screen-sized columns ---------- */
+:root.paged, :root.paged body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+.paged .reader { padding-block: 20px 0; }
+.paged .page { column-count: 1; column-gap: 48px; column-fill: auto; overflow: hidden; }
+.paged .pager { display: none; }
+.paged .page img, .paged .page svg { max-height: calc(var(--pageH, 80vh) - 1.5em); }
+.paged .page h1, .paged .page h2, .paged .page h3, .paged .page h4 { break-after: avoid; }
+.paged .page img, .paged .page svg, .paged .page figure { break-inside: avoid; }
+
+.settings { max-height: calc(100dvh - 90px); overflow-y: auto; }
 .settings {
   position: fixed; z-index: 31;
   top: calc(env(safe-area-inset-top, 0px) + 62px);
@@ -646,6 +656,14 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     <h3>Ancho de línea</h3>
     <div class="seg" id="widthSeg"><button data-v="28em">Estrecho</button><button data-v="34em">Normal</button><button data-v="42em">Ancho</button></div>
   </div>
+  <div>
+    <h3>Modo de lectura</h3>
+    <div class="seg" id="modeSeg"><button data-v="pages">Páginas</button><button data-v="scroll">Desplazamiento</button></div>
+  </div>
+  <div id="swipeRow">
+    <h3>Deslizar el dedo para avanzar</h3>
+    <div class="seg" id="swipeSeg"><button data-v="ltr">Hacia la derecha →</button><button data-v="rtl">← Hacia la izquierda</button></div>
+  </div>
 </div>
 
 <input type="file" id="file" accept=".epub,application/epub+zip" hidden>
@@ -699,19 +717,23 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
   const idbDel = (st, k) => idbDo(st, "readwrite", (s) => s.delete(k)).catch(() => null);
 
   /* ---------- preferences ---------- */
-  const prefs = Object.assign({ size: 19, theme: "auto", font: "serif", width: "34em" }, ls.get("atril:prefs", {}));
+  const prefs = Object.assign({ size: 19, theme: "auto", font: "serif", width: "34em", mode: "pages", swipe: "ltr" }, ls.get("atril:prefs", {}));
+  var pageIdx = 0, pagesN = 1, layoutMode = "";
   function applyPrefs() {
+    const keep = book.zip && view === "reader" ? ratio() : null;
     root.style.setProperty("--fs", prefs.size + "px");
     root.style.setProperty("--measure", prefs.width);
     if (prefs.theme === "auto") root.removeAttribute("data-reader"); else root.setAttribute("data-reader", prefs.theme);
     root.setAttribute("data-font", prefs.font);
     $("#sizeInput").value = prefs.size; $("#sizeVal").textContent = prefs.size;
-    for (const [seg, val] of [["#themeSeg", prefs.theme], ["#fontSeg", prefs.font], ["#widthSeg", prefs.width]])
+    for (const [seg, val] of [["#themeSeg", prefs.theme], ["#fontSeg", prefs.font], ["#widthSeg", prefs.width], ["#modeSeg", prefs.mode], ["#swipeSeg", prefs.swipe]])
       document.querySelectorAll(seg + " button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === val)));
+    $("#swipeRow").hidden = prefs.mode !== "pages";
     ls.set("atril:prefs", prefs);
+    if (keep !== null) relayout(keep);
   }
   $("#sizeInput").addEventListener("input", (e) => { prefs.size = +e.target.value; applyPrefs(); });
-  for (const [seg, key] of [["#themeSeg", "theme"], ["#fontSeg", "font"], ["#widthSeg", "width"]])
+  for (const [seg, key] of [["#themeSeg", "theme"], ["#fontSeg", "font"], ["#widthSeg", "width"], ["#modeSeg", "mode"], ["#swipeSeg", "swipe"]])
     $(seg).addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; prefs[key] = b.dataset.v; applyPrefs(); });
   applyPrefs();
 
@@ -937,7 +959,6 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     for (const img of byTag(body, "img")) {
       const src = img.getAttribute("src");
       img.setAttribute("src", src ? await blobUrl(resolve(href, src)) : "");
-      img.setAttribute("loading", "lazy");
       if (!img.getAttribute("alt")) img.setAttribute("alt", "");
     }
     for (const im of byTag(body, "image")) {
@@ -955,6 +976,7 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     }
     page.replaceChildren(...Array.from(body.childNodes).map((n) => document.importNode(n, true)));
     applyAnnotations();
+    page.querySelectorAll("img").forEach((im) => { if (!im.complete) im.addEventListener("load", relayoutSoon, { once: true }); });
     afterRender(opt);
   }
   function afterRender(opt) {
@@ -965,13 +987,13 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     $("#where").textContent = (lab ? lab + " · " : "") + (i + 1) + " de " + n;
     markToc();
     requestAnimationFrame(() => {
+      layoutPages();
       if (opt.hlId && flash(opt.hlId)) { onScroll(); return save(); }
       if (opt.hash) {
         const t = document.getElementById(opt.hash);
-        if (t) { t.scrollIntoView(); return save(); }
+        if (t) { reveal(t); return save(); }
       }
-      const max = document.documentElement.scrollHeight - innerHeight;
-      window.scrollTo(0, opt.ratio ? opt.ratio * max : 0);
+      placeAt(opt.ratio || 0);
       onScroll();
       save();
     });
@@ -981,10 +1003,126 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     const i = spineIndex(p);
     if (i < 0) return;
     if (i === book.cur && hash && !$("#reader").hidden) {
-      const t = document.getElementById(hash); if (t) t.scrollIntoView(); return;
+      const t = document.getElementById(hash); if (t) reveal(t); return;
     }
     render(i, { hash });
   }
+
+  /* ---------- page mode ---------- */
+  const GAP = 48;
+  const isPaged = () => prefs.mode === "pages" && view === "reader";
+  const pageStep = () => $("#page").clientWidth + GAP;
+  const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function layoutPages() {
+    const page = $("#page");
+    const paged = isPaged();
+    root.classList.toggle("paged", paged);
+    layoutMode = paged ? "pages" : "scroll";
+    if (!paged) { page.style.height = ""; return; }
+    const top = $("#bar").getBoundingClientRect().bottom;
+    const st = $("#status").hidden ? 0 : $("#status").offsetHeight;
+    const H = Math.max(200, Math.floor(innerHeight - top - st - 36));
+    page.style.height = H + "px";
+    root.style.setProperty("--pageH", H + "px");
+    pagesN = Math.max(1, Math.ceil((page.scrollWidth + GAP - 2) / pageStep()));
+    pageIdx = Math.min(pageIdx, pagesN - 1);
+  }
+  // Put the reader at a position (0 = start of chapter, 1 = end) in whichever mode is active
+  function placeAt(r) {
+    if (isPaged()) {
+      pageIdx = Math.max(0, Math.min(pagesN - 1, Math.round(r * (pagesN - 1))));
+      $("#page").scrollLeft = pageIdx * pageStep();
+    } else {
+      const max = document.documentElement.scrollHeight - innerHeight;
+      window.scrollTo(0, r * max);
+    }
+  }
+  function relayout(r) {
+    if (!book.zip || view !== "reader") return;
+    layoutPages();
+    placeAt(r);
+    onScroll();
+  }
+  let relT = 0;
+  function relayoutSoon() {
+    clearTimeout(relT);
+    const keep = ratio();
+    relT = setTimeout(() => relayout(keep), 120);
+  }
+  function goPage(i, animate) {
+    pageIdx = i;
+    const left = i * pageStep();
+    const page = $("#page");
+    if (animate && !reduceMotion()) page.scrollTo({ left, behavior: "smooth" }); else page.scrollLeft = left;
+    onScroll();
+  }
+  let turnLock = 0;
+  function turn(d) {
+    if (!book.zip || Date.now() < turnLock) return;
+    hideBar();
+    const i = pageIdx + d;
+    // Crossing into another chapter: wait for it to load before accepting more turns
+    if (i < 0) { if (book.cur > 0) { turnLock = Date.now() + 450; render(book.cur - 1, { ratio: 1 }); } return; }
+    if (i >= pagesN) { if (book.cur < book.spine.length - 1) { turnLock = Date.now() + 450; render(book.cur + 1, { ratio: 0 }); } return; }
+    goPage(i, true);
+  }
+  // Scroll the page (or flip to the page) that holds an element
+  function reveal(el, center) {
+    if (isPaged()) {
+      const page = $("#page");
+      const x = el.getBoundingClientRect().left - page.getBoundingClientRect().left + page.scrollLeft;
+      goPage(Math.max(0, Math.min(pagesN - 1, Math.floor((x + 1) / pageStep()))), false);
+    } else el.scrollIntoView(center ? { block: "center" } : undefined);
+  }
+
+  // Swipe, tap the edges, mouse wheel
+  const readerEl = $("#reader");
+  let touch = null, swipedAt = 0, wheelAt = 0;
+  readerEl.addEventListener("touchstart", (e) => {
+    if (!isPaged() || e.touches.length !== 1) { touch = null; return; }
+    const t = e.touches[0];
+    touch = { x: t.clientX, y: t.clientY, at: Date.now() };
+  }, { passive: true });
+  readerEl.addEventListener("touchend", (e) => {
+    if (!touch) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touch.x, dy = t.clientY - touch.y, dt = Date.now() - touch.at;
+    touch = null;
+    if (!getSelection().isCollapsed) return;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4 && dt < 900) {
+      swipedAt = Date.now();
+      turn((dx > 0) === (prefs.swipe === "ltr") ? 1 : -1);
+    }
+  }, { passive: true });
+  readerEl.addEventListener("click", (e) => {
+    if (!isPaged() || Date.now() - swipedAt < 500) return;
+    if (e.target.closest("a, mark.hl, button")) return;
+    if (!getSelection().isCollapsed || !$("#hlBar").hidden) return;
+    const x = e.clientX / innerWidth;
+    if (x > 0.7) turn(1); else if (x < 0.3) turn(-1);
+  });
+  readerEl.addEventListener("wheel", (e) => {
+    if (!isPaged()) return;
+    e.preventDefault();
+    const d = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (Math.abs(d) < 8 || Date.now() - wheelAt < 380) return;
+    wheelAt = Date.now();
+    turn(d > 0 ? 1 : -1);
+  }, { passive: false });
+  // If the page box is scrolled by something else (e.g. dragging a selection), settle on a whole page
+  let snapT = 0;
+  $("#page").addEventListener("scroll", () => {
+    if (!isPaged()) return;
+    clearTimeout(snapT);
+    snapT = setTimeout(() => {
+      const page = $("#page"), s = pageStep();
+      const i = Math.max(0, Math.min(pagesN - 1, Math.round(page.scrollLeft / s)));
+      if (getSelection().isCollapsed && Math.abs(page.scrollLeft - i * s) > 2) page.scrollLeft = i * s;
+      pageIdx = i;
+      onScroll();
+    }, 160);
+  }, { passive: true });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => relayoutSoon());
   const step = (d) => { const i = book.cur + d; if (book.zip && i >= 0 && i < book.spine.length) render(i); };
   $("#prevBtn").addEventListener("click", () => step(-1));
   $("#nextBtn").addEventListener("click", () => step(1));
@@ -1202,7 +1340,7 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
   function flash(id) {
     const m = document.querySelector('mark.hl[data-id="' + id + '"]');
     if (!m) return false;
-    m.scrollIntoView({ block: "center" });
+    reveal(m, true);
     m.classList.add("flash");
     setTimeout(() => m.classList.remove("flash"), 1600);
     return true;
@@ -1252,7 +1390,9 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   /* ---------- progress ---------- */
   let saveT = 0;
+  // Position in the chapter, 0..1, used to save and restore where you are
   function ratio() {
+    if (layoutMode === "pages") return pagesN > 1 ? pageIdx / (pagesN - 1) : 1;
     const max = document.documentElement.scrollHeight - innerHeight;
     return max > 0 ? Math.min(1, Math.max(0, scrollY / max)) : 1;
   }
@@ -1291,17 +1431,20 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
   function save() { if (book.key) ls.set(book.key, { i: book.cur, r: ratio(), p: bookFraction(ratio()) }); }
   function onScroll() {
     if ($("#reader").hidden || !book.spine.length) return;
-    const r = ratio(), bf = bookFraction(r);
+    // In page mode the current page still counts as unread
+    const paged = layoutMode === "pages";
+    const r = paged ? pageIdx / pagesN : ratio(), bf = bookFraction(r);
     $("#prog").style.width = bf * 100 + "%";
     $("#chMeter").style.width = r * 100 + "%";
     $("#bkMeter").style.width = bf * 100 + "%";
     const chLeft = Math.round((1 - r) * 100), bkLeft = Math.round((1 - bf) * 100);
     const lens = book.total ? book.lens : null;
-    $("#chLeft").textContent = chLeft <= 0 ? "terminado" : "queda " + chLeft + " %" + (lens ? " · " + fmtTime(lens[book.cur] * (1 - r)) : "");
+    $("#chLeft").textContent = (paged ? "pág. " + (pageIdx + 1) + "/" + pagesN + " · " : "") +
+      (chLeft <= 0 ? "terminado" : "queda " + chLeft + " %" + (lens ? " · " + fmtTime(lens[book.cur] * (1 - r)) : ""));
     $("#bkLeft").textContent = bkLeft <= 0 ? "terminado" : "queda " + bkLeft + " %" + (lens ? " · " + fmtTime(book.total * (1 - bf)) : "");
     clearTimeout(saveT); saveT = setTimeout(save, 300);
   }
-  addEventListener("resize", onScroll, { passive: true });
+  addEventListener("resize", () => { if (layoutMode === "pages" || isPaged()) relayoutSoon(); else onScroll(); }, { passive: true });
   addEventListener("scroll", onScroll, { passive: true });
 
   /* ---------- panels ---------- */
@@ -1331,10 +1474,14 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     if (!$("#hlBar").hidden && !e.target.closest("#hlBar, mark.hl") && getSelection().isCollapsed) hideBar();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.target.matches("input, textarea")) return;
+    const tg = e.target && e.target.matches ? e.target : null;
+    if (tg && tg.matches("input, textarea")) return;
     if (e.key === "Escape") closePanels();
-    else if (e.key === "ArrowRight" && !$("#reader").hidden) step(1);
-    else if (e.key === "ArrowLeft" && !$("#reader").hidden) step(-1);
+    else if ($("#reader").hidden || (tg && tg.matches("select"))) return;
+    else if (isPaged() && ["ArrowRight", "PageDown", " "].includes(e.key)) { e.preventDefault(); turn(1); }
+    else if (isPaged() && ["ArrowLeft", "PageUp"].includes(e.key)) { e.preventDefault(); turn(-1); }
+    else if (e.key === "ArrowRight") step(1);
+    else if (e.key === "ArrowLeft") step(-1);
   });
   /* ---------- views: library, reader, notes summary ---------- */
   let view = "library";
@@ -1350,6 +1497,8 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     $("#reader").hidden = v !== "reader";
     $("#notesView").hidden = v !== "notes";
     $("#status").hidden = v !== "reader";
+    root.classList.toggle("paged", isPaged());
+    if (v !== "reader") layoutMode = "";
     $("#tocBtn").hidden = v !== "reader";
     $("#setBtn").hidden = v !== "reader";
     $("#homeBtn").hidden = v === "library";
@@ -1709,7 +1858,6 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
   })();
 })();
 </script>
-
 <script>
   if ("serviceWorker" in navigator) {
     addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
