@@ -21,7 +21,12 @@ Abre la web publicada con GitHub Pages:
 
 ## Actualizar
 
-Al cambiar cualquier archivo, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `atril-v2`). La app se actualiza sola la siguiente vez que se abre con conexión.
+En cada versión nueva cambia dos números, que deben coincidir:
+
+- `APP_VERSION` en `index.html` (por ejemplo `"5"`), y `APP_DATE` con la fecha.
+- `VERSION` en `sw.js` (por ejemplo `"atril-v5"`).
+
+La app comprueba si hay versión nueva al abrirse y al volver a ella. Cuando la descarga, muestra el aviso «Hay una versión nueva de Atril» con un botón **Actualizar**. El número de versión que estás usando se ve al pie de la biblioteca y en **Ajustes (Aa)**.
 
 ## Créditos
 

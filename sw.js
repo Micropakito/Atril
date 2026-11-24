@@ -1,6 +1,7 @@
 // Atril service worker: keeps the app available offline.
 // Bump VERSION whenever any file changes so every device picks up the new version.
-const VERSION = "atril-v3";
+// Keep the number equal to APP_VERSION in index.html (atril-v4 <-> "4").
+const VERSION = "atril-v4";
 const SHELL = [
   "./",
   "index.html",
@@ -59,4 +60,9 @@ self.addEventListener("fetch", (e) => {
       return (await net) || new Response("Sin conexión", { status: 503 });
     })
   );
+});
+
+// The page asks which version is stored, to show it and to spot an outdated copy
+self.addEventListener("message", (e) => {
+  if (e.data === "version" && e.ports && e.ports[0]) e.ports[0].postMessage(VERSION);
 });
