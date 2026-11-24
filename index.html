@@ -1018,7 +1018,11 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     const paged = isPaged();
     root.classList.toggle("paged", paged);
     layoutMode = paged ? "pages" : "scroll";
-    if (!paged) { page.style.height = ""; return; }
+    if (!paged) { page.style.height = ""; page.style.width = ""; return; }
+    // Whole-pixel width: a fractional width makes every page turn land a little off,
+    // and the error adds up until the first letters of each line are cut off
+    page.style.width = "";
+    page.style.width = Math.floor(page.getBoundingClientRect().width) + "px";
     const top = $("#bar").getBoundingClientRect().bottom;
     const st = $("#status").hidden ? 0 : $("#status").offsetHeight;
     const H = Math.max(200, Math.floor(innerHeight - top - st - 36));
@@ -1054,6 +1058,8 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     const left = i * pageStep();
     const page = $("#page");
     if (animate && !reduceMotion()) page.scrollTo({ left, behavior: "smooth" }); else page.scrollLeft = left;
+    // Make sure the animation ends exactly on the page, even if it was interrupted
+    setTimeout(() => { if (pageIdx === i && Math.abs(page.scrollLeft - left) > 1) page.scrollLeft = left; }, 600);
     onScroll();
   }
   let turnLock = 0;
@@ -1115,11 +1121,8 @@ mark.flash { outline: 2px solid var(--accent); outline-offset: 2px; }
     if (!isPaged()) return;
     clearTimeout(snapT);
     snapT = setTimeout(() => {
-      const page = $("#page"), s = pageStep();
-      const i = Math.max(0, Math.min(pagesN - 1, Math.round(page.scrollLeft / s)));
-      if (getSelection().isCollapsed && Math.abs(page.scrollLeft - i * s) > 2) page.scrollLeft = i * s;
-      pageIdx = i;
-      onScroll();
+      const page = $("#page"), target = pageIdx * pageStep();
+      if (getSelection().isCollapsed && Math.abs(page.scrollLeft - target) > 1) page.scrollLeft = target;
     }, 160);
   }, { passive: true });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => relayoutSoon());

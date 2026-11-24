@@ -1,6 +1,6 @@
 // Atril service worker: keeps the app available offline.
 // Bump VERSION whenever any file changes so every device picks up the new version.
-const VERSION = "atril-v2";
+const VERSION = "atril-v3";
 const SHELL = [
   "./",
   "index.html",
